@@ -6,10 +6,13 @@ import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import jwt
 import pytest
+from fastapi.testclient import TestClient
 
-from tests.conftest import set_fault
+from support_platform.api.app import create_app
+from tests.conftest import ANCHOR, make_settings, set_fault
 from tests.contract.spec_validator import validate_response
 
 pytestmark = pytest.mark.integration
@@ -197,9 +200,34 @@ def test_concurrent_duplicate_comments_create_exactly_one(client, auth, mock_app
 
 # ---- console static serving ------------------------------------------------------------
 
-def test_console_redirect_and_unknown_asset(client):
-    assert client.get("/console", follow_redirects=False).status_code in (200, 307, 308)
-    assert client.get("/console/does-not-exist.js").status_code == 404
+@pytest.fixture
+def console_app(tmp_path, monkeypatch, mock_app):
+    """An app serving a tiny stand-in console, so this test doesn't depend on `npm run build`
+    having produced frontend/dist (CI's test job never builds the frontend)."""
+    console = tmp_path / "console"
+    console.mkdir()
+    (console / "index.html").write_text("<!doctype html><title>Support Console</title>", encoding="utf-8")
+    monkeypatch.setenv("CONSOLE_DIR", str(console))
+    app = create_app(make_settings(tmp_path), clock=lambda: ANCHOR,
+                     upstream_transport=httpx.ASGITransport(app=mock_app), run_background=False)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_console_is_served_with_redirect_and_404_for_unknown_assets(console_app):
+    assert console_app.get("/console", follow_redirects=False).status_code in (307, 308)
+    page = console_app.get("/console/")
+    assert page.status_code == 200 and "Support Console" in page.text
+    assert console_app.get("/console/does-not-exist.js").status_code == 404
+
+
+def test_api_still_works_when_the_console_was_never_built(tmp_path, monkeypatch, mock_app, auth):
+    monkeypatch.setenv("CONSOLE_DIR", str(tmp_path / "missing"))
+    app = create_app(make_settings(tmp_path), clock=lambda: ANCHOR,
+                     upstream_transport=httpx.ASGITransport(app=mock_app), run_background=False)
+    with TestClient(app) as c:
+        assert c.get("/console/").status_code == 404           # no console mounted
+        assert c.get("/readyz").json()["status"] == "ready"     # but the API is fine
 
 
 def test_case_search_waits_for_one_upstream_deadline_not_two(client, auth, mock_app):
