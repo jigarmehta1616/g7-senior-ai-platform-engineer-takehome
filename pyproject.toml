@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "support-platform"
+version = "1.0.0"
+description = "Customer Entitlement & Support Case API, mock upstreams, and Support Copilot MCP server"
+readme = "README.md"
+authors = [{ name = "Jigar Mehta" }]
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "pydantic>=2.8",
+  "pyyaml>=6.0",
+  "pyjwt>=2.8",
+  "mcp>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "anyio>=4",
+  "jsonschema>=4.22",
+  "referencing>=0.35",
+  "openapi-spec-validator>=0.7",
+  "ruff>=0.5",
+  "mypy>=1.11",
+]
+agent = ["anthropic>=0.40"]
+
+[project.scripts]
+support-platform-api = "support_platform.__main__:main"
+mock-upstreams = "mock_upstreams.__main__:main"
+support-copilot-mcp = "support_copilot.__main__:main"
+
+[tool.setuptools.package-dir]
+support_platform = "src/support_platform"
+mock_upstreams = "src/mock_upstreams"
+support_copilot = "mcp/support_copilot"
+
+[tool.setuptools]
+packages = [
+  "support_platform",
+  "support_platform.api",
+  "support_platform.api.routes",
+  "support_platform.domain",
+  "support_platform.services",
+  "support_platform.upstreams",
+  "support_platform.persistence",
+  "support_platform.security",
+  "support_platform.events",
+  "support_platform.observability",
+  "mock_upstreams",
+  "support_copilot",
+]
+
+[tool.setuptools.package-data]
+support_platform = ["persistence/migrations/*.sql"]
+mock_upstreams = ["data/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "mcp"]
+addopts = "-q --strict-markers"
+markers = [
+  "contract: response/route conformance against openapi.yaml",
+  "integration: API exercised end-to-end against mocked upstreams",
+  "evals: deterministic MCP tool evals",
+]
+filterwarnings = ["error"]   # any warning fails the suite
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "mcp", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "RUF"]
+ignore = ["S101", "S311", "RUF012", "B008"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["mcp"]
+known-first-party = ["support_platform", "mock_upstreams", "support_copilot", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "E501"]
+"mcp/demo/**" = ["ASYNC250", "E501"]
+"scripts/**" = ["S105", "S106", "S603", "S607"]
+"src/mock_upstreams/**" = ["S608"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "mcp/support_copilot"]
+mypy_path = ["src", "mcp"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true

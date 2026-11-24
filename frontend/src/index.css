@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+/* Design tokens. Light by default; dark follows the OS (Tailwind's `dark:` uses prefers-color-scheme). */
+@theme {
+  --color-surface: #ffffff;
+  --color-canvas: #f6f7f9;
+  --color-line: #dde2e8;
+  --color-ink: #18202a;
+  --color-muted: #5d6b7a;
+  --color-brand: #2357d6;
+  --color-brand-ink: #ffffff;
+  --color-ok: #1d7f4e;
+  --color-warn: #a76100;
+  --color-bad: #b42332;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #171d25;
+    --color-canvas: #0f141a;
+    --color-line: #2a333e;
+    --color-ink: #e6ebf1;
+    --color-muted: #93a1b0;
+    --color-brand: #6d95ff;
+    --color-brand-ink: #0b1020;
+    --color-ok: #4cc38a;
+    --color-warn: #f0a640;
+    --color-bad: #ff6b7a;
+    color-scheme: dark;
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-canvas text-ink antialiased;
+  }
+  input,
+  select,
+  textarea {
+    @apply rounded-md border border-line bg-surface px-2 py-1.5 text-sm text-ink;
+  }
+}

@@ -1,0 +1,1031 @@
+openapi: 3.1.0
+info:
+  title: Customer Entitlement & Support Case API
+  version: 1.0.0
+  summary: One API in front of the case system, the entitlement system and the usage warehouse.
+  description: |
+    One API in front of the case system, the entitlement system and the usage warehouse. It's
+    used by two kinds of client: ordinary apps and iPaaS flows (MuleSoft and similar), and the
+    internal Support Copilot, which reaches it through the MCP server in `mcp/`.
+
+    ## How I modelled the resources
+    * **Aggregate when the consumer wants one answer.** `GET /v1/customers/{customerId}` combines
+      entitlement, usage and case counts. Nobody calling this should have to learn three systems,
+      their auth, their failure modes or their field names.
+    * **Expose a resource when another system owns its lifecycle.** Cases and comments belong to
+      the case system, so they're exposed as `Case` and `Comment` resources with our own field
+      names (`status`, not `Status`). Writes go straight through; there's no local copy.
+    * **Expand, don't embed.** `GET /v1/cases?include=account` adds a small account reference
+      only if you ask for it. The cross-system filters (`supportTier`, `renewalBefore`) are there
+      because "P1s for Platinum customers renewing soon" is the question everyone asks, and
+      without them every caller would do an N+1 lookup.
+    * Upstream IDs are passed through as opaque strings, never normalised.
+
+    ## Errors
+    Every non-2xx response is `application/problem+json` (RFC 9457). It always has a stable
+    `type`, the request's `correlationId`, and for validation failures an `errors[]` list of
+    `{pointer, detail}`. Upstream problems are kept distinct from ours: `503 upstream-unavailable`,
+    `504 upstream-timeout` and `502 upstream-bad-response` say which system failed in `upstream`.
+
+    ## Versioning and deprecation
+    * The major version lives in the path (`/v1`). Inside a version I only make additive changes,
+      such as new optional fields or parameters, or new enum values in responses. Clients must
+      ignore fields they don't know.
+    * A breaking change becomes `/v2`, run side by side with `/v1` for at least six months.
+    * Deprecations are announced in the responses themselves, with `Deprecation` (RFC 9745),
+      `Sunset` (RFC 8594) and `Link: rel="deprecation"`, as well as `deprecated: true` here.
+      You can see it working on the old `account_id` parameter of `GET /v1/cases`.
+    * Use of deprecated features is logged per `client_id`, so I know who to chase before a sunset.
+
+    ## Authentication and authorization
+    OAuth 2.0 bearer tokens (JWT, RFC 9068) from the company's OIDC provider. Scopes come in three
+    sizes: per resource (`cases:read`), per risky action (`cases:escalate`) and per field.
+    `finance:read` unlocks `contract.arrUsd` and `pii:read` unlocks `primaryContact`. A field you
+    can't see is left out and listed in `redactedFields`, so "hidden" never looks like "empty".
+
+    **Agents act for a person, never as themselves.** The Copilot swaps the user's token for a
+    delegated one (RFC 8693 token exchange): `sub` is the person, `act.sub` is the agent, and the
+    scopes are the overlap between what the person has and what the agent is allowed. So an agent
+    can never do more than its user. The Copilot is never given `finance:read` or `pii:read`, and
+    every agent call is audited with both names.
+
+    ## Retries, concurrent edits and rate limits
+    * `POST .../comments` needs an `Idempotency-Key`. A retry gets the original response back
+      (`Idempotency-Replayed: true`). The same key with a different body is a `422`.
+    * Cases have a strong `ETag`, and `POST .../escalate` needs `If-Match` (`428` if missing,
+      `412` if stale). Two people can't escalate based on a state neither of them saw.
+    * Every authenticated response carries `RateLimit-Limit`, `RateLimit-Remaining` and
+      `RateLimit-Reset`, and a `429` adds `Retry-After`. Limits are per person + agent, and agents
+      get a smaller budget.
+
+    ## Avoiding data loss, and governance
+    * There's no way to delete business data through this API. Comments are append-only, and
+      escalation is a guarded state change. Idempotency keys and ETags stop duplicates and lost updates.
+    * Every write, every refusal and every agent call goes into an append-only, hash-chained audit
+      log (`GET /v1/audit-events`). Correlation IDs tie the API, MCP and upstream logs together.
+    * Webhook payloads carry IDs and state only: no comment text, no ARR, no personal data.
+    * Responses are sent with `Cache-Control: no-store`. SECURITY.md has the full list of controls.
+
+    ## Why REST, and where GraphQL or gRPC would be better
+    REST fits this job. There are a few coarse, well-understood resources, and the main consumers
+    are iPaaS tools that speak REST natively. HTTP also gives me idempotency keys, conditional
+    requests, standard rate-limit headers and status codes without inventing anything, and scopes
+    map naturally onto endpoints.
+    * **GraphQL** would suit a rich UI, say a full customer-360 screen, that needs flexible nested
+      reads in one round trip. The price is harder per-field authorization, harder caching, and
+      rate limiting by query cost.
+    * **gRPC** would suit high-volume internal calls, like a usage pipeline streaming metrics or
+      this service talking to its own backends, where strict contracts, streaming and latency
+      matter more than browser or iPaaS reach.
+  contact:
+    name: Jigar Mehta
+servers:
+  - url: http://localhost:8080
+    description: Local (make run / docker compose up)
+tags:
+  - name: customers
+  - name: cases
+  - name: governance
+  - name: operations
+security:
+  - oauth2: []
+
+paths:
+  /v1/customers/{customerId}:
+    get:
+      tags: [customers]
+      operationId: getCustomer
+      summary: Aggregated customer view (entitlement + usage + case counts)
+      description: |
+        Calls the three upstreams concurrently. If usage or the case system fails, the
+        response is still `200` with that section `null`, `degraded: true` and the failing
+        source listed in `dataSources`. If the entitlement system is down the last CSV/XML
+        snapshot is served (`status: stale`). Only when no entitlement data exists at all
+        does the call fail with `503`.
+      security:
+        - oauth2: [customers:read]
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: Customer summary
+          headers:
+            X-Correlation-ID: { $ref: '#/components/headers/XCorrelationID' }
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/UpstreamBadResponse' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+        '504': { $ref: '#/components/responses/UpstreamTimeout' }
+
+  /v1/cases:
+    get:
+      tags: [cases]
+      operationId: listCases
+      summary: Search cases (filter, sort, cursor pagination)
+      description: |
+        Keyset pagination with an opaque, signed cursor bound to the filter set — reusing a
+        cursor with different filters is a `400 invalid-cursor`. No total count is returned
+        (it would require a full upstream scan on every page).
+      security:
+        - oauth2: [cases:read]
+      parameters:
+        - name: status
+          in: query
+          description: Comma-separated statuses.
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/CaseStatus' }
+        - name: priority
+          in: query
+          description: Comma-separated priorities.
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/Priority' }
+        - name: accountId
+          in: query
+          schema: { $ref: '#/components/schemas/AccountId' }
+        - name: account_id
+          in: query
+          deprecated: true
+          description: Deprecated alias of `accountId`. Responses carry `Deprecation`/`Sunset` headers. Sunset 2027-06-30.
+          schema: { $ref: '#/components/schemas/AccountId' }
+        - name: supportTier
+          in: query
+          description: Cross-system filter evaluated against the entitlement system.
+          schema: { $ref: '#/components/schemas/SupportTier' }
+        - name: renewalBefore
+          in: query
+          description: Only cases whose account's contract ends on or before this date.
+          schema: { type: string, format: date }
+        - name: openedBefore
+          in: query
+          description: Only cases opened strictly before this instant (e.g. now − 48h). Must include an offset.
+          schema: { type: string, format: date-time }
+        - name: openedAfter
+          in: query
+          schema: { type: string, format: date-time }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [openedAt, -openedAt, priority, -priority]
+            default: -openedAt
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: cursor
+          in: query
+          schema: { type: string, maxLength: 512 }
+        - name: include
+          in: query
+          description: Expand related resources. `account` adds an `account` reference to each case.
+          schema: { type: string, enum: [account] }
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: A page of cases
+          headers:
+            X-Correlation-ID: { $ref: '#/components/headers/XCorrelationID' }
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+            Deprecation: { $ref: '#/components/headers/Deprecation' }
+            Sunset: { $ref: '#/components/headers/Sunset' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaseList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/UpstreamBadResponse' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+        '504': { $ref: '#/components/responses/UpstreamTimeout' }
+
+  /v1/cases/{caseId}:
+    get:
+      tags: [cases]
+      operationId: getCase
+      summary: Get a case with comments
+      security:
+        - oauth2: [cases:read]
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: The case
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Correlation-ID: { $ref: '#/components/headers/XCorrelationID' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Case' }
+        '304':
+          description: Not modified
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/UpstreamBadResponse' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+
+  /v1/cases/{caseId}/comments:
+    post:
+      tags: [cases]
+      operationId: addCaseComment
+      summary: Add a comment (idempotent create)
+      description: |
+        The author is taken from the access token (`sub`, plus `via <agent>` for delegated
+        tokens) — never from the request body, so it can't be spoofed. Retrying with the same
+        `Idempotency-Key` and body returns the original `201` with `Idempotency-Replayed: true`.
+        Keys are scoped per caller and retained for 24h.
+      security:
+        - oauth2: [cases:write]
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommentCreate' }
+      responses:
+        '201':
+          description: Comment created (or replayed)
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+            X-Correlation-ID: { $ref: '#/components/headers/XCorrelationID' }
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Comment' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/UpstreamBadResponse' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+        '504': { $ref: '#/components/responses/UpstreamTimeout' }
+
+  /v1/cases/{caseId}/escalate:
+    post:
+      tags: [cases]
+      operationId: escalateCase
+      summary: Escalate a case (guarded state transition)
+      description: |
+        Business rules (violations return the `code` shown):
+        * R1 only `open`, `in_progress`, `pending_customer` cases → else `409 CASE_NOT_ACTIVE`
+        * R2 max escalation level is 2 → else `409 ESCALATION_LIMIT_REACHED`
+        * R3 Standard-tier customers cannot escalate P3 cases → `422 NOT_ENTITLED`
+        * R4 `reason: other` requires a `note` → `422 NOTE_REQUIRED`
+        * R5 target team is derived (Platinum → `engineering_on_call`, others → `tier2_support`,
+          level 2 → `duty_manager`); callers cannot choose it.
+
+        Requires `If-Match` with the case's current ETag. On success a `case.escalated`
+        event is written to the outbox and delivered to webhook subscribers.
+      security:
+        - oauth2: [cases:escalate]
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - name: If-Match
+          in: header
+          required: true
+          description: Current ETag of the case (from `GET /v1/cases/{caseId}`).
+          schema: { type: string }
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EscalateRequest' }
+      responses:
+        '200':
+          description: Escalated case
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            X-Correlation-ID: { $ref: '#/components/headers/XCorrelationID' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Case' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/UpstreamBadResponse' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+        '504': { $ref: '#/components/responses/UpstreamTimeout' }
+
+  /v1/webhook-subscriptions:
+    post:
+      tags: [governance]
+      operationId: createWebhookSubscription
+      summary: Subscribe to events
+      description: The signing secret is returned **once**, in this response only.
+      security:
+        - oauth2: [webhooks:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookSubscriptionCreate' }
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscriptionCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    get:
+      tags: [governance]
+      operationId: listWebhookSubscriptions
+      summary: List subscriptions
+      security:
+        - oauth2: [webhooks:manage]
+      responses:
+        '200':
+          description: Subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WebhookSubscription' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/webhook-subscriptions/{subscriptionId}:
+    delete:
+      tags: [governance]
+      operationId: disableWebhookSubscription
+      summary: Disable a subscription (soft delete; delivery history is retained)
+      security:
+        - oauth2: [webhooks:manage]
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionId'
+      responses:
+        '204': { description: Disabled }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/webhook-subscriptions/{subscriptionId}/deliveries:
+    get:
+      tags: [governance]
+      operationId: listWebhookDeliveries
+      summary: Delivery attempts for a subscription (debugging / replay decisions)
+      security:
+        - oauth2: [webhooks:manage]
+      parameters:
+        - $ref: '#/components/parameters/SubscriptionId'
+      responses:
+        '200':
+          description: Deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WebhookDelivery' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/audit-events:
+    get:
+      tags: [governance]
+      operationId: listAuditEvents
+      summary: Read the tamper-evident audit log
+      security:
+        - oauth2: [audit:read]
+      parameters:
+        - { name: actor, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: agent, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: resourceId, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: before, in: query, description: Return events with seq lower than this (pagination)., schema: { type: integer, minimum: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: Audit events, newest first, plus a chain-integrity check
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEventList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /healthz:
+    get:
+      tags: [operations]
+      operationId: liveness
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+
+  /readyz:
+    get:
+      tags: [operations]
+      operationId: readiness
+      description: Ready when our own database is reachable. Upstream breaker states are reported but do not fail readiness (we degrade instead).
+      security: []
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+
+webhooks:
+  caseEscalated:
+    post:
+      operationId: onCaseEscalated
+      summary: case.escalated
+      description: |
+        Delivered at-least-once, signed per the Standard Webhooks spec:
+        `webhook-signature: v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{raw body}"))>`.
+
+        Receivers MUST (1) verify the signature with a constant-time compare over the **raw**
+        body, (2) reject timestamps more than 5 minutes from now (replay protection),
+        (3) de-duplicate on `webhook-id`, and (4) respond `2xx` within 5s, doing work async.
+        Several space-separated signatures may be present during secret rotation.
+        Non-2xx responses are retried with exponential backoff (2^n s, max 1h) for 6 attempts,
+        then dead-lettered (visible via `/v1/webhook-subscriptions/{id}/deliveries`).
+        A reference verifier ships in `support_platform.security.webhook_signing.verify_webhook`.
+      parameters:
+        - { name: webhook-id, in: header, required: true, description: Unique event id; use for de-duplication., schema: { type: string } }
+        - { name: webhook-timestamp, in: header, required: true, description: Unix seconds., schema: { type: string, pattern: '^[0-9]+$' } }
+        - { name: webhook-signature, in: header, required: true, schema: { type: string, pattern: '^v1,[A-Za-z0-9+/=]+( v1,[A-Za-z0-9+/=]+)*$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CaseEscalatedEvent' }
+      responses:
+        '2XX': { description: Accepted. Any 2xx acknowledges delivery. }
+        '4XX': { description: 'Retried until max attempts, then dead-lettered.' }
+        '5XX': { description: 'Retried until max attempts, then dead-lettered.' }
+
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      description: |
+        JWT access tokens (RFC 9068). Delegated agent tokens come from RFC 8693 token exchange
+        and carry `act.sub`. Locally, tokens are minted by the dev IdP at `POST /dev/oauth/token`.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://idp.example.com/oauth2/authorize
+          tokenUrl: https://idp.example.com/oauth2/token
+          scopes: &scopes
+            customers:read: Read customer summaries
+            cases:read: Read cases and comments
+            cases:write: Add comments
+            cases:escalate: Escalate cases (high risk)
+            finance:read: "Field-level: see contract.arrUsd"
+            pii:read: "Field-level: see customer contact details"
+            webhooks:manage: Manage webhook subscriptions
+            audit:read: Read the audit log
+        clientCredentials:
+          tokenUrl: https://idp.example.com/oauth2/token
+          scopes: *scopes
+
+  parameters:
+    CustomerId:
+      name: customerId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/AccountId' }
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^CS-[0-9]{3,12}$', examples: [CS-10231] }
+    SubscriptionId:
+      name: subscriptionId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^whs_[A-Za-z0-9_]{4,40}$' }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated unique key (UUID recommended), 8–128 chars of `[A-Za-z0-9_-:.]`.
+      schema: { type: string, pattern: '^[A-Za-z0-9_\-:.]{8,128}$' }
+    CorrelationIdHeader:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: Optional caller-supplied correlation ID (8–128 safe chars). Generated if absent or malformed.
+      schema: { type: string, pattern: '^[A-Za-z0-9._:-]{8,128}$' }
+
+  headers:
+    XCorrelationID:
+      description: Correlation ID for this request (echoed or generated).
+      schema: { type: string }
+    RateLimitLimit:
+      description: Requests allowed per minute for this (user, agent).
+      schema: { type: integer }
+    RateLimitRemaining:
+      description: Requests remaining in the current window.
+      schema: { type: integer }
+    RateLimitReset:
+      description: Seconds until the budget is fully replenished.
+      schema: { type: integer }
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: integer }
+    ETag:
+      description: Strong entity tag of the case, e.g. `"v4"`.
+      schema: { type: string }
+    Location:
+      schema: { type: string }
+    IdempotencyReplayed:
+      description: Present (`true`) when the response is a replay of an earlier identical request.
+      schema: { type: string, enum: ['true'] }
+    Deprecation:
+      description: RFC 9745 — present when a deprecated feature was used.
+      schema: { type: string }
+    Sunset:
+      description: RFC 8594 — when the deprecated feature will be removed.
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Validation failed (`validation-error`) or bad cursor (`invalid-cursor`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.example.com/problems/validation-error
+            title: Request validation failed
+            status: 400
+            detail: One or more fields are invalid.
+            instance: /v1/cases
+            correlationId: 3f2a9c1e0b7d4a55
+            errors: [{ pointer: query/limit, detail: Input should be less than or equal to 100 }]
+    Unauthorized:
+      description: Missing, invalid or expired token
+      headers:
+        WWW-Authenticate: { schema: { type: string } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Token lacks a required scope (`insufficient-scope`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Resource does not exist
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: Invalid state transition (`invalid-state-transition`) or a concurrent request with the same idempotency key (`idempotency-in-progress`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionFailed:
+      description: If-Match does not match the current ETag (`etag-mismatch`); the response carries the current `ETag`
+      headers:
+        ETag: { $ref: '#/components/headers/ETag' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionRequired:
+      description: If-Match header missing (`precondition-required`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PayloadTooLarge:
+      description: Body exceeds 64 KiB
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnprocessableEntity:
+      description: Business rule violation (`business-rule-violation`) or idempotency key reused with a different body (`idempotency-key-reuse`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+        RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+        RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UpstreamUnavailable:
+      description: A required upstream is down or its circuit is open (`upstream-unavailable`)
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.example.com/problems/upstream-unavailable
+            title: Upstream system unavailable
+            status: 503
+            detail: The entitlements system is unavailable (circuit_open). Retry later.
+            instance: /v1/customers/ACC-007
+            correlationId: 3f2a9c1e0b7d4a55
+            upstream: entitlements
+            reason: circuit_open
+    UpstreamBadResponse:
+      description: An upstream answered with data we couldn't interpret (`upstream-bad-response`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UpstreamTimeout:
+      description: An upstream did not answer within the deadline (`upstream-timeout`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      required: [type, title, status, correlationId]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        detail: { type: string }
+        instance: { type: string }
+        correlationId: { type: string }
+        code: { type: string, description: Machine-readable business rule code (e.g. NOT_ENTITLED). }
+        upstream: { type: string, enum: [cases, entitlements, usage] }
+        reason: { type: string }
+        requiredScopes: { type: array, items: { type: string } }
+        currentEtag: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [pointer, detail]
+            properties:
+              pointer: { type: string, description: 'JSON pointer into the request body (e.g. `/body`), or `query/<name>` / `header/<name>`.' }
+              detail: { type: string }
+
+    AccountId:
+      type: string
+      pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$'
+      description: Opaque upstream account id (e.g. ACC-007). Not normalised.
+      examples: [ACC-007]
+    Priority:
+      type: string
+      enum: [P1, P2, P3]
+    CaseStatus:
+      type: string
+      enum: [open, in_progress, pending_customer, resolved, closed]
+    SupportTier:
+      type: string
+      enum: [Platinum, Gold, Silver, Standard]
+
+    CustomerSummary:
+      type: object
+      required: [id, name, supportTier, contract, usage, cases, degraded, dataSources, redactedFields]
+      properties:
+        id: { $ref: '#/components/schemas/AccountId' }
+        name: { type: string }
+        supportTier: { $ref: '#/components/schemas/SupportTier' }
+        contract:
+          type: object
+          required: [endDate, renewalInDays]
+          properties:
+            endDate: { type: string, format: date }
+            renewalInDays: { type: integer, description: Negative if already past. }
+            arrUsd:
+              type: [integer, 'null']
+              description: Annual recurring revenue. **Only present with `finance:read`.**
+              x-required-scope: finance:read
+        primaryContact:
+          type: object
+          description: '**Only present with `pii:read`.**'
+          x-required-scope: pii:read
+          properties:
+            email: { type: [string, 'null'], format: email }
+        usage:
+          description: Null when the usage warehouse is unavailable (see dataSources).
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UsageSummary'
+        cases:
+          description: Null when the case system is unavailable.
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [active, activeP1, escalated]
+              properties:
+                active: { type: integer, minimum: 0 }
+                activeP1: { type: integer, minimum: 0 }
+                escalated: { type: integer, minimum: 0 }
+        degraded: { type: boolean, description: True if any source is stale or unavailable. }
+        dataSources:
+          type: array
+          items: { $ref: '#/components/schemas/DataSource' }
+        redactedFields:
+          type: array
+          description: Field paths withheld because the caller lacks the scope.
+          items: { type: string }
+    UsageSummary:
+      type: object
+      required: [latestMonth, protectedTb, apiCalls, activeUsers, protectedTbTrend, history]
+      properties:
+        latestMonth: { type: [string, 'null'], pattern: '^[0-9]{4}-[0-9]{2}$' }
+        protectedTb: { type: [number, 'null'] }
+        apiCalls: { type: [integer, 'null'] }
+        activeUsers: { type: [integer, 'null'] }
+        protectedTbTrend: { type: string, enum: [up, down, flat] }
+        history:
+          type: array
+          maxItems: 12
+          items:
+            type: object
+            required: [month, protectedTb, apiCalls, activeUsers]
+            properties:
+              month: { type: string }
+              protectedTb: { type: number }
+              apiCalls: { type: integer }
+              activeUsers: { type: integer }
+    DataSource:
+      type: object
+      required: [source, status]
+      properties:
+        source: { type: string, enum: [entitlements, usage, cases] }
+        status: { type: string, enum: [ok, stale, unavailable] }
+        asOf: { type: string, format: date-time }
+        reason: { type: string }
+
+    AccountRef:
+      type: object
+      required: [id, name, supportTier, renewalDate]
+      properties:
+        id: { $ref: '#/components/schemas/AccountId' }
+        name: { type: string }
+        supportTier: { $ref: '#/components/schemas/SupportTier' }
+        renewalDate: { type: string, format: date }
+    CaseSummary:
+      type: object
+      required: [id, accountId, priority, status, subject, openedAt, updatedAt, ageHours, escalationLevel, commentCount]
+      properties:
+        id: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        priority: { $ref: '#/components/schemas/Priority' }
+        status: { $ref: '#/components/schemas/CaseStatus' }
+        subject: { type: string }
+        openedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        ageHours: { type: number, minimum: 0 }
+        escalationLevel: { type: integer, minimum: 0, maximum: 2 }
+        commentCount: { type: integer, minimum: 0 }
+        account:
+          description: Present only with `include=account`; null if the entitlement system could not resolve it.
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/AccountRef'
+    Case:
+      allOf:
+        - $ref: '#/components/schemas/CaseSummary'
+        - type: object
+          required: [escalation, comments]
+          properties:
+            escalation:
+              type: object
+              required: [level]
+              properties:
+                level: { type: integer, minimum: 0, maximum: 2 }
+                targetTeam: { type: [string, 'null'], enum: [engineering_on_call, tier2_support, duty_manager, null] }
+                reason: { type: [string, 'null'] }
+            comments:
+              type: array
+              items: { $ref: '#/components/schemas/Comment' }
+    CaseList:
+      type: object
+      required: [data, page, degraded, staleSources]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/CaseSummary' }
+        page:
+          type: object
+          required: [limit, nextCursor]
+          properties:
+            limit: { type: integer }
+            nextCursor: { type: [string, 'null'], description: Null on the last page. }
+        degraded: { type: boolean }
+        staleSources:
+          type: array
+          items: { type: string }
+
+    Comment:
+      type: object
+      required: [id, author, body, createdAt, visibility]
+      properties:
+        id: { type: string }
+        author: { type: string, description: 'Derived from the token: `sub`, or `sub via agent`.' }
+        body: { type: string }
+        createdAt: { type: string, format: date-time }
+        visibility: { type: string, enum: [internal, public] }
+    CommentCreate:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body: { type: string, minLength: 1, maxLength: 4000 }
+        visibility: { type: string, enum: [internal, public], default: internal }
+
+    EscalateRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          enum: [customer_impact, sla_breach_risk, security_incident, executive_request, other]
+        note: { type: string, maxLength: 500, description: Required when reason is `other`. }
+
+    CaseEscalatedEvent:
+      type: object
+      description: CloudEvents 1.0 envelope. Contains identifiers and state only — no comment text, ARR or PII.
+      required: [specversion, id, type, source, time, data]
+      properties:
+        specversion: { type: string, const: '1.0' }
+        id: { type: string, description: Same value as the webhook-id header. }
+        type: { type: string, const: case.escalated }
+        source: { type: string, examples: [/v1/cases/CS-10231] }
+        time: { type: string, format: date-time }
+        datacontenttype: { type: string, const: application/json }
+        correlationid: { type: string }
+        data:
+          type: object
+          required: [caseId, accountId, priority, status, escalationLevel, targetTeam, reason, escalatedBy]
+          properties:
+            caseId: { type: string }
+            accountId: { $ref: '#/components/schemas/AccountId' }
+            priority: { $ref: '#/components/schemas/Priority' }
+            status: { $ref: '#/components/schemas/CaseStatus' }
+            escalationLevel: { type: integer, minimum: 1, maximum: 2 }
+            targetTeam: { type: string, enum: [engineering_on_call, tier2_support, duty_manager] }
+            reason: { type: string }
+            escalatedBy:
+              type: object
+              required: [subject]
+              properties:
+                subject: { type: string }
+                agent: { type: [string, 'null'] }
+
+    WebhookSubscriptionCreate:
+      type: object
+      additionalProperties: false
+      required: [url, eventTypes]
+      properties:
+        url: { type: string, format: uri, description: Must be https outside local development. }
+        eventTypes:
+          type: array
+          minItems: 1
+          items: { type: string, enum: [case.escalated] }
+        description: { type: string, maxLength: 200 }
+    WebhookSubscription:
+      type: object
+      required: [id, url, eventTypes, status, createdAt]
+      properties:
+        id: { type: string }
+        url: { type: string }
+        eventTypes: { type: array, items: { type: string } }
+        description: { type: [string, 'null'] }
+        status: { type: string, enum: [active, disabled] }
+        createdAt: { type: string, format: date-time }
+    WebhookSubscriptionCreated:
+      allOf:
+        - $ref: '#/components/schemas/WebhookSubscription'
+        - type: object
+          required: [secret]
+          properties:
+            secret: { type: string, description: 'Signing secret (`whsec_...`). Shown once.' }
+    WebhookDelivery:
+      type: object
+      required: [id, eventId, status, attempts, updatedAt]
+      properties:
+        id: { type: string }
+        eventId: { type: string }
+        status: { type: string, enum: [pending, delivered, dead] }
+        attempts: { type: integer }
+        lastStatusCode: { type: [integer, 'null'] }
+        lastError: { type: [string, 'null'] }
+        updatedAt: { type: string, format: date-time }
+
+    AuditEventList:
+      type: object
+      required: [data, page, integrity]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [seq, eventId, occurredAt, correlationId, actor, action, outcome, httpStatus, hash]
+            properties:
+              seq: { type: integer }
+              eventId: { type: string }
+              occurredAt: { type: string, format: date-time }
+              correlationId: { type: string }
+              actor:
+                type: object
+                required: [subject, clientId]
+                properties:
+                  subject: { type: string }
+                  agent: { type: [string, 'null'] }
+                  clientId: { type: string }
+              action: { type: string, examples: ['POST /v1/cases/{caseId}/escalate'] }
+              resourceType: { type: [string, 'null'] }
+              resourceId: { type: [string, 'null'] }
+              outcome: { type: string, enum: [success, denied, failed] }
+              httpStatus: { type: integer }
+              hash: { type: string }
+        page:
+          type: object
+          required: [nextBefore]
+          properties:
+            nextBefore: { type: [integer, 'null'] }
+        integrity:
+          type: object
+          required: [chainValid, eventsChecked]
+          properties:
+            chainValid: { type: boolean }
+            eventsChecked: { type: integer }
+
+    Readiness:
+      type: object
+      required: [status, database, upstreams]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        database: { type: string, enum: [ok, down] }
+        upstreams:
+          type: object
+          additionalProperties: { type: string, enum: [closed, open, half_open] }

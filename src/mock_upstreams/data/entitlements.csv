@@ -1,0 +1,10 @@
+account_id,name,support_tier,contract_end,arr_usd,primary_contact_email
+ACC-007,Globex Industries,Platinum,2027-01-15,612000,it-director@globex.example
+ACC-77,Acme Corp,Platinum,2027-01-15,480000,backup-admin@acme.example
+ACC-101,Initech,Platinum,2027-08-30,350000,it-admin@initech.example
+ACC-102,Umbrella Health,Gold,2027-01-05,220000,infra@umbrella.example
+ACC-103,Stark Logistics,Platinum,2026-12-20,905000,sre@stark.example
+ACC-104,Wayne Analytics,Silver,2027-02-01,45000,ops@wayne.example
+ACC-105,Hooli Cloud,Gold,2028-03-31,150000,platform@hooli.example
+ACC-106,Soylent Foods,Standard,2027-01-31,12000,helpdesk@soylent.example
+ACC-108,Tyrell Robotics,Platinum,2027-02-10,740000,ops.lead@tyrell.example

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Entitlement change feed (NetSuite-like). Newer than the nightly CSV export: where an account
+     appears here, <tier> and <renewal> override the CSV values. ACC-104 was upgraded Silver->Gold. -->
+<accounts generatedAt="2026-11-24T06:00:00Z">
+  <account id="ACC-007">
+    <tier>Platinum</tier>
+    <renewal>2027-01-15</renewal>
+  </account>
+  <account id="ACC-104">
+    <tier>Gold</tier>
+    <renewal>2027-02-01</renewal>
+  </account>
+</accounts>

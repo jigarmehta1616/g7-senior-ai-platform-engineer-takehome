@@ -1,0 +1,37 @@
+# docker compose up  ->  API on :8080 (console at /console/), mock upstreams on :8081
+services:
+  upstreams:
+    build: .
+    command: ["python", "-m", "mock_upstreams"]
+    environment:
+      MOCK_HOST: 0.0.0.0
+      MOCK_PORT: "8081"
+    ports: ["8081:8081"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz')"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    command: ["python", "-m", "support_platform"]
+    environment:
+      ENV: local                       # enables the dev IdP + console; never set in shared environments
+      API_HOST: 0.0.0.0
+      API_PORT: "8080"
+      UPSTREAM_BASE_URL: http://upstreams:8081
+      DB_PATH: /data/platform.db
+    ports: ["8080:8080"]
+    volumes: ["platform-data:/data"]
+    depends_on:
+      upstreams: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz')"]
+      interval: 5s
+      retries: 10
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  platform-data:

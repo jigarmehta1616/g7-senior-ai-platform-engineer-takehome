@@ -1,0 +1,1 @@
+"""Support Copilot MCP server."""

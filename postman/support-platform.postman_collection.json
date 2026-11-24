@@ -1,0 +1,1557 @@
+{
+  "info": {
+    "name": "Support Platform API - functional & regression",
+    "description": "Functional and regression checks. Run against `python scripts/run_local.py` or `docker compose up`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "00 Setup & auth",
+      "item": [
+        {
+          "name": "Reset mock upstreams",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"reset\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token: support-lead",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/dev/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:dev:grant-type:persona"
+                },
+                {
+                  "key": "persona",
+                  "value": "support-lead"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"leadToken\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token: support-agent",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/dev/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:dev:grant-type:persona"
+                },
+                {
+                  "key": "persona",
+                  "value": "support-agent"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"agentToken\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token: finance-analyst",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/dev/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:dev:grant-type:persona"
+                },
+                {
+                  "key": "persona",
+                  "value": "finance-analyst"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"financeToken\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token: platform-admin",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/dev/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:dev:grant-type:persona"
+                },
+                {
+                  "key": "persona",
+                  "value": "platform-admin"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"token issued\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"adminToken\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token exchange: copilot on behalf of support-lead",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/dev/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:ietf:params:oauth:grant-type:token-exchange"
+                },
+                {
+                  "key": "subject_token",
+                  "value": "{{leadToken}}"
+                },
+                {
+                  "key": "actor_client",
+                  "value": "support-copilot"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"delegated token issued\", () => pm.response.to.have.status(200));",
+                  "const t = pm.response.json();",
+                  "pm.test(\"agent never receives finance/pii scopes\", () => {",
+                  "  pm.expect(t.scope).to.not.include(\"finance:read\");",
+                  "  pm.expect(t.scope).to.not.include(\"pii:read\");",
+                  "});",
+                  "pm.collectionVariables.set(\"copilotToken\", t.access_token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 Customers",
+      "item": [
+        {
+          "name": "Customer 360 as Finance (ARR visible)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{financeToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/customers/ACC-007"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json();",
+                  "pm.test(\"aggregates entitlement + usage + cases\", () => {",
+                  "  pm.expect(c.supportTier).to.eql(\"Platinum\");",
+                  "  pm.expect(c.usage.history.length).to.be.above(0);",
+                  "  pm.expect(c.cases.active).to.be.a(\"number\");",
+                  "});",
+                  "pm.test(\"ARR visible with finance:read\", () => pm.expect(c.contract.arrUsd).to.eql(612000));",
+                  "pm.test(\"correlation + rate-limit headers\", () => {",
+                  "  pm.expect(pm.response.headers.has(\"X-Correlation-ID\")).to.be.true;",
+                  "  pm.expect(pm.response.headers.has(\"RateLimit-Remaining\")).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer 360 as Support (ARR redacted)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/customers/ACC-007"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const c = pm.response.json();",
+                  "pm.test(\"ARR omitted and listed as redacted\", () => {",
+                  "  pm.expect(c.contract).to.not.have.property(\"arrUsd\");",
+                  "  pm.expect(c.redactedFields).to.include(\"contract.arrUsd\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer 360 via Copilot (delegated)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{copilotToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/customers/ACC-007"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"agent sees no ARR even though acting for a lead\", () => pm.expect(pm.response.json().contract).to.not.have.property(\"arrUsd\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown customer -> 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/customers/ACC-404"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"problem+json not-found\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/not-found$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/customers/ACC-007"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"problem+json unauthenticated\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/unauthenticated$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Inject usage outage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockUrl}}/_admin/faults",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target\": \"usage\",\n  \"mode\": \"error\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"fault set\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer 360 with usage down -> degraded, still 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/customers/ACC-77"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 despite upstream failure\", () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json();",
+                  "pm.test(\"degraded flag + null usage + entitlement still present\", () => {",
+                  "  pm.expect(c.degraded).to.be.true;",
+                  "  pm.expect(c.usage).to.be.null;",
+                  "  pm.expect(c.name).to.eql(\"Acme Corp\");",
+                  "  pm.expect(c.dataSources.find(s => s.source === \"usage\").status).to.eql(\"unavailable\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Restore usage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockUrl}}/_admin/faults",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target\": \"usage\",\n  \"mode\": \"ok\"\n}"
+            }
+          },
+          "event": []
+        }
+      ]
+    },
+    {
+      "name": "02 Case search",
+      "item": [
+        {
+          "name": "Sample question: Platinum P1 > 48h renewing in 90d",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases?priority=P1&supportTier=Platinum&openedBefore={{openedBefore}}&renewalBefore={{renewalBefore}}&include=account&limit=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const names = [...new Set(pm.response.json().data.map(c => c.account.name))].sort();",
+                  "pm.test(\"expected customers\", () => pm.expect(names).to.eql([\"Acme Corp\", \"Globex Industries\", \"Stark Logistics\", \"Tyrell Robotics\"]));"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = new Date();",
+                  "pm.collectionVariables.set(\"openedBefore\", new Date(now - 48*3600e3).toISOString().replace(/\\.\\d+Z$/, \"Z\"));",
+                  "pm.collectionVariables.set(\"renewalBefore\", new Date(+now + 90*864e5).toISOString().slice(0,10));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Page 1 (limit 5)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases?limit=5&sort=priority"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"5 items + cursor\", () => { pm.expect(b.data.length).to.eql(5); pm.expect(b.page.nextCursor).to.be.a(\"string\"); });",
+                  "pm.collectionVariables.set(\"cursor\", b.page.nextCursor);",
+                  "pm.collectionVariables.set(\"page1Ids\", JSON.stringify(b.data.map(c => c.id)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Page 2 (no overlap)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases?limit=5&sort=priority&cursor={{cursor}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const p1 = JSON.parse(pm.collectionVariables.get(\"page1Ids\"));",
+                  "pm.test(\"no duplicates across pages\", () => pm.response.json().data.forEach(c => pm.expect(p1).to.not.include(c.id)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cursor reused with other filters -> 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases?limit=5&priority=P2&cursor={{cursor}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"problem+json invalid-cursor\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/invalid-cursor$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "limit=1000 -> 400 with pointer",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases?limit=1000"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"problem+json validation-error\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/validation-error$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});",
+                  "pm.test(\"pointer names the field\", () => pm.expect(pm.response.json().errors[0].pointer).to.eql(\"query/limit\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deprecated account_id param -> Deprecation/Sunset headers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases?account_id=ACC-007"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"still works\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"signals deprecation\", () => { pm.expect(pm.response.headers.has(\"Deprecation\")).to.be.true; pm.expect(pm.response.headers.has(\"Sunset\")).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 Comments (idempotency)",
+      "item": [
+        {
+          "name": "Add comment (new Idempotency-Key)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{commentKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10232/comments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Customer confirmed restore window\",\n  \"visibility\": \"internal\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 + Location\", () => { pm.response.to.have.status(201); pm.expect(pm.response.headers.get(\"Location\")).to.include(\"/comments/\"); });",
+                  "pm.test(\"author from token, not body\", () => pm.expect(pm.response.json().author).to.eql(\"alice@example.com\"));",
+                  "pm.collectionVariables.set(\"commentId\", pm.response.json().id);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"commentKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retry same key + body -> replayed, no duplicate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{commentKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10232/comments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Customer confirmed restore window\",\n  \"visibility\": \"internal\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 replay\", () => { pm.response.to.have.status(201); pm.expect(pm.response.headers.get(\"Idempotency-Replayed\")).to.eql(\"true\"); });",
+                  "pm.test(\"same comment id\", () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"commentId\")));"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get(\"commentKey\")) pm.collectionVariables.set(\"commentKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Same key, different body -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{commentKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10232/comments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"Something else\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"problem+json idempotency-key-reuse\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/idempotency-key-reuse$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Missing Idempotency-Key -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10232/comments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"x\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"problem+json validation-error\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/validation-error$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown field (author spoofing) -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10232/comments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"x\",\n  \"author\": \"ceo@example.com\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"problem+json validation-error\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/validation-error$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Escalation (ETag + rules)",
+      "item": [
+        {
+          "name": "Read case (capture ETag)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10240"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ETag present\", () => pm.expect(pm.response.headers.get(\"ETag\")).to.match(/^\"v\\d+\"$/));",
+                  "pm.collectionVariables.set(\"etag\", pm.response.headers.get(\"ETag\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "If-None-Match -> 304",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "If-None-Match",
+                "value": "{{etag}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10240"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"304\", () => pm.response.to.have.status(304));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Escalate without If-Match -> 428",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10240/escalate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"customer_impact\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 428\", () => pm.response.to.have.status(428));",
+                  "pm.test(\"problem+json precondition-required\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/precondition-required$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Escalate without scope -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10240/escalate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"customer_impact\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"problem+json insufficient-scope\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/insufficient-scope$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Escalate (happy path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10240/escalate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"sla_breach_risk\",\n  \"note\": \"Renewal in 52 days\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json();",
+                  "pm.test(\"level 1 -> engineering on-call (Platinum)\", () => { pm.expect(c.escalation.level).to.eql(1); pm.expect(c.escalation.targetTeam).to.eql(\"engineering_on_call\"); });",
+                  "pm.test(\"new ETag\", () => pm.expect(pm.response.headers.get(\"ETag\")).to.not.eql(pm.collectionVariables.get(\"etag\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Escalate again with stale ETag -> 412",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10240/escalate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"sla_breach_risk\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 412\", () => pm.response.to.have.status(412));",
+                  "pm.test(\"problem+json etag-mismatch\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/etag-mismatch$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Escalate closed case -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "\"v2\""
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10290/escalate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"customer_impact\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 409\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"problem+json invalid-state-transition\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/invalid-state-transition$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Standard-tier P3 -> 422 NOT_ENTITLED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "\"v1\""
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10301/escalate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"customer_impact\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"problem+json business-rule-violation\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/business-rule-violation$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});",
+                  "pm.test(\"code\", () => pm.expect(pm.response.json().code).to.eql(\"NOT_ENTITLED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reason=other without note -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "{{etag2}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/cases/CS-10231/escalate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"other\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"problem+json business-rule-violation\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/business-rule-violation$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.sendRequest({url: pm.variables.replaceIn(\"{{baseUrl}}/v1/cases/CS-10231\"), header: {Authorization: \"Bearer \" + pm.collectionVariables.get(\"leadToken\")}}, (e, r) => pm.collectionVariables.set(\"etag2\", r.headers.get(\"ETag\")));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 Governance (webhooks, audit)",
+      "item": [
+        {
+          "name": "Webhook delivered + signature verified (receiver)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockUrl}}/_receiver/webhooks"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const items = pm.response.json().items.filter(i => i.event && i.event.data.caseId === \"CS-10240\");",
+                  "pm.test(\"case.escalated received with valid signature\", () => { pm.expect(items.length).to.be.above(0); pm.expect(items[0].verified).to.be.true; });",
+                  "pm.test(\"payload is minimised (no note text)\", () => pm.expect(JSON.stringify(items[0].event)).to.not.include(\"Renewal in 52 days\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit log: chain valid, denial recorded",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{leadToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/audit-events?limit=200"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"hash chain valid\", () => pm.expect(b.integrity.chainValid).to.be.true);",
+                  "pm.test(\"403 escalation attempt audited as denied\", () => pm.expect(b.data.some(e => e.outcome === \"denied\" && e.action.endsWith(\"/escalate\"))).to.be.true);",
+                  "pm.test(\"delegated read audited with agent identity\", () => pm.expect(b.data.some(e => e.actor.agent === \"support-copilot\")).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit log without audit:read -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{agentToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/audit-events"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"problem+json insufficient-scope\", () => {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\");",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.type).to.match(/\\/insufficient-scope$/);",
+                  "  pm.expect(p.correlationId).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Webhook subscriptions (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/webhook-subscriptions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"secret never listed\", () => pm.response.json().data.forEach(s => pm.expect(s).to.not.have.property(\"secret\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/readyz"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ready\", () => pm.expect(pm.response.json().status).to.eql(\"ready\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/healthz"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"alive\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql(\"ok\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create webhook subscription",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/webhook-subscriptions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://hooks.example.com/support\",\n  \"eventTypes\": [\n    \"case.escalated\"\n  ],\n  \"description\": \"Postman regression\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 + Location\", () => { pm.response.to.have.status(201); pm.expect(pm.response.headers.get(\"Location\")).to.include(\"/v1/webhook-subscriptions/\"); });",
+                  "const s = pm.response.json();",
+                  "pm.test(\"signing secret returned once at creation\", () => pm.expect(s.secret).to.match(/^whsec_/));",
+                  "pm.collectionVariables.set(\"subscriptionId\", s.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unsupported event type -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/webhook-subscriptions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://hooks.example.com/x\",\n  \"eventTypes\": [\n    \"case.deleted\"\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"problem+json validation-error\", () => pm.expect(pm.response.json().type).to.match(/\\/validation-error$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Subscription deliveries",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/webhook-subscriptions/{{subscriptionId}}/deliveries"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 with data array\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().data).to.be.an(\"array\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Disable subscription",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/webhook-subscriptions/{{subscriptionId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Disabled subscription shows as disabled",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/webhook-subscriptions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"soft-deleted, history kept\", () => {",
+                  "  const s = pm.response.json().data.find(x => x.id === pm.collectionVariables.get(\"subscriptionId\"));",
+                  "  pm.expect(s.status).to.eql(\"disabled\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown subscription -> 404",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/webhook-subscriptions/whs_doesnotexist"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"problem+json not-found\", () => pm.expect(pm.response.json().type).to.match(/\\/not-found$/));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "leadToken",
+      "value": ""
+    },
+    {
+      "key": "agentToken",
+      "value": ""
+    },
+    {
+      "key": "financeToken",
+      "value": ""
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "copilotToken",
+      "value": ""
+    },
+    {
+      "key": "cursor",
+      "value": ""
+    },
+    {
+      "key": "page1Ids",
+      "value": ""
+    },
+    {
+      "key": "commentKey",
+      "value": ""
+    },
+    {
+      "key": "commentId",
+      "value": ""
+    },
+    {
+      "key": "etag",
+      "value": ""
+    },
+    {
+      "key": "etag2",
+      "value": ""
+    },
+    {
+      "key": "openedBefore",
+      "value": ""
+    },
+    {
+      "key": "renewalBefore",
+      "value": ""
+    },
+    {
+      "key": "subscriptionId",
+      "value": ""
+    }
+  ]
+}
