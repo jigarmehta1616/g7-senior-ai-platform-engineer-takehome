@@ -30,7 +30,7 @@ lint:
 	$(PY) -m mypy
 
 newman:             ## run the collection against a running stack
-	npx newman run postman/support-platform.postman_collection.json -e postman/local.postman_environment.json
+	npx --yes newman run postman/support-platform.postman_collection.json -e postman/local.postman_environment.json
 
 mcp:                ## MCP server over stdio (acts for the support-lead persona)
 	COPILOT_PERSONA=support-lead $(PY) -m support_copilot
